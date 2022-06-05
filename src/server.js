@@ -1,6 +1,7 @@
 import express from "express";
-import SocketIO from "socket.io";
+import { Server } from "socket.io";
 import http from "http";
+import { instrument } from "@socket.io/admin-ui";
 
 const app = express();
 
@@ -15,15 +16,37 @@ const handleListen = () => console.log("Listening on http://localhost:3000");
 const server = http.createServer(app);
 server.listen(3000, handleListen);
 
-const wss = SocketIO(server);
+const wss = new Server(server, {
+  cors: {
+    origin: ["https://admin.socket.io"],
+    credentials: true,
+  },
+});
+instrument(wss, { auth: false });
+
+function getPublicRooms() {
+  const {
+    sockets: {
+      adapter: { sids, rooms },
+    },
+  } = wss;
+
+  return Array.from(rooms.keys()).filter((key) => sids.get(key) === undefined);
+}
+
+function countRoom(room) {
+  return wss.sockets.adapter.rooms.get(room)?.size;
+}
+
 wss.on("connection", (socket) => {
   socket["nickname"] = "Anonymous";
   console.log("Connected to Browser.");
 
   socket.on("room", (room, done) => {
     socket.join(room);
-    done();
-    socket.to(room).emit("join", socket.nickname);
+    done(countRoom(room));
+    socket.to(room).emit("join", socket.nickname, countRoom(room));
+    wss.sockets.emit("rooms", getPublicRooms());
   });
 
   socket.on("nickname", (nickname) => {
@@ -37,9 +60,12 @@ wss.on("connection", (socket) => {
 
   socket.on("disconnecting", () => {
     socket.rooms.forEach((room) =>
-      socket.to(room).emit("leave", socket.nickname)
+      socket.to(room).emit("leave", socket.nickname, countRoom(room) - 1)
     );
   });
 
-  socket.on("disconnect", () => console.log("Disconnected from Browser."));
+  socket.on("disconnect", () => {
+    console.log("Disconnected from Browser.");
+    wss.sockets.emit("rooms", getPublicRooms());
+  });
 });
